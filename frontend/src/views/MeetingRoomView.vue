@@ -89,6 +89,14 @@
       @close="isDeviceModalOpen = false"
       @device-changed="applyDeviceChanges"
     />
+
+    <!-- Permission Guide Modal -->
+    <PermissionGuideModal
+      :is-open="deviceStore.isPermissionGuideOpen"
+      :kind="deviceStore.activePermissionGuideKind"
+      @close="deviceStore.closePermissionGuide()"
+      @retry-success="handlePermissionRetrySuccess"
+    />
   </div>
 </template>
 
@@ -101,6 +109,7 @@ import { useDeviceStore } from '@/stores/devices'
 import { useMeetingStore } from '@/stores/meeting'
 import { useChatStore } from '@/stores/chat'
 import { livekitManager } from '@/lib/livekit'
+import { parseMediaError, listenToPermissionChanges } from '@/lib/permissions'
 import { api } from '@/lib/api'
 import ParticipantGrid from '@/components/call/ParticipantGrid.vue'
 import ControlBar from '@/components/call/ControlBar.vue'
@@ -108,6 +117,7 @@ import ChatPanel from '@/components/call/ChatPanel.vue'
 import ParticipantListPanel from '@/components/call/ParticipantListPanel.vue'
 import HostControlsMenu from '@/components/call/HostControlsMenu.vue'
 import DevicePickerModal from '@/components/call/DevicePickerModal.vue'
+import PermissionGuideModal from '@/components/common/PermissionGuideModal.vue'
 import type { DataPacket } from '@/types'
 
 const route = useRoute()
@@ -170,12 +180,33 @@ async function initCall() {
     // 3. Connect to LiveKit Room
     await livekitManager.connect(livekitUrl, token)
 
-    // 4. Publish initial audio and video tracks according to store states
+    // 4. Safely publish initial audio and video tracks without blocking meeting entry on failure
     if (deviceStore.isVideoEnabled) {
-      await livekitManager.setCameraEnabled(true)
+      try {
+        await livekitManager.setCameraEnabled(true, deviceStore.selectedVideoInputId)
+      } catch (err: any) {
+        console.warn('Initial camera enable failed:', err)
+        deviceStore.isVideoEnabled = false
+        const parsed = parseMediaError('camera', err)
+        deviceStore.camError = parsed
+        if (parsed.isBlockedByBrowser) {
+          deviceStore.camPermissionState = 'denied'
+        }
+      }
     }
+
     if (deviceStore.isAudioEnabled) {
-      await livekitManager.setMicrophoneEnabled(true)
+      try {
+        await livekitManager.setMicrophoneEnabled(true, deviceStore.selectedAudioInputId)
+      } catch (err: any) {
+        console.warn('Initial microphone enable failed:', err)
+        deviceStore.isAudioEnabled = false
+        const parsed = parseMediaError('microphone', err)
+        deviceStore.micError = parsed
+        if (parsed.isBlockedByBrowser) {
+          deviceStore.micPermissionState = 'denied'
+        }
+      }
     }
 
     // 5. Setup LiveKit Callbacks
@@ -206,15 +237,45 @@ async function initCall() {
     )
 
     cleanups.push(
+      livekitManager.onScreenShareStopped(() => {
+        deviceStore.isScreenSharing = false
+        addToast('🖥️ Screen sharing stopped')
+      })
+    )
+
+    cleanups.push(
       livekitManager.onDataReceived((packet: DataPacket) => {
         handleIncomingDataPacket(packet)
       })
     )
 
-    // 6. Load Chat History
+    // 6. Live permission change listeners
+    cleanups.push(
+      listenToPermissionChanges('microphone', async (state) => {
+        deviceStore.micPermissionState = state
+        if (state === 'granted') {
+          deviceStore.micError = null
+          addToast('🎤 Microphone access granted in browser settings')
+          await deviceStore.enumerateDevices()
+        }
+      })
+    )
+
+    cleanups.push(
+      listenToPermissionChanges('camera', async (state) => {
+        deviceStore.camPermissionState = state
+        if (state === 'granted') {
+          deviceStore.camError = null
+          addToast('📷 Camera access granted in browser settings')
+          await deviceStore.enumerateDevices()
+        }
+      })
+    )
+
+    // 7. Load Chat History
     await chatStore.loadHistory(meetingCode.value)
 
-    // 7. Periodic participant / lobby poll for hosts
+    // 8. Periodic participant / lobby poll for hosts
     if (meetingStore.isHost) {
       lobbyPollTimer = window.setInterval(() => {
         meetingStore.fetchParticipants(meetingCode.value)
@@ -265,7 +326,7 @@ function handleIncomingDataPacket(packet: DataPacket) {
     case 'mute_participant':
       if (packet.targetId === localId || packet.targetId === '*') {
         if (deviceStore.isAudioEnabled) {
-          deviceStore.toggleAudio()
+          deviceStore.isAudioEnabled = false
           livekitManager.setMicrophoneEnabled(false)
           addToast('🔇 You were muted by the host')
         }
@@ -287,23 +348,98 @@ function handleIncomingDataPacket(packet: DataPacket) {
 }
 
 async function toggleMic() {
-  deviceStore.toggleAudio()
-  await livekitManager.setMicrophoneEnabled(deviceStore.isAudioEnabled)
+  if (!deviceStore.isAudioEnabled) {
+    // Unmuting / enabling microphone
+    try {
+      await livekitManager.setMicrophoneEnabled(true, deviceStore.selectedAudioInputId)
+      deviceStore.isAudioEnabled = true
+      deviceStore.micPermissionState = 'granted'
+      deviceStore.micError = null
+      addToast('🎤 Microphone is on')
+      await deviceStore.enumerateDevices()
+    } catch (err: any) {
+      console.warn('Failed to unmute microphone:', err)
+      deviceStore.isAudioEnabled = false
+      const parsed = parseMediaError('microphone', err)
+      deviceStore.micError = parsed
+      if (parsed.isBlockedByBrowser) {
+        deviceStore.micPermissionState = 'denied'
+        deviceStore.openPermissionGuide('microphone')
+      } else {
+        addToast(`⚠️ ${parsed.title}: ${parsed.message}`)
+      }
+    }
+  } else {
+    // Muting microphone
+    try {
+      await livekitManager.setMicrophoneEnabled(false)
+      deviceStore.isAudioEnabled = false
+      addToast('🔇 Microphone is off')
+    } catch (err) {
+      console.warn('Error muting microphone:', err)
+      deviceStore.isAudioEnabled = false
+    }
+  }
 }
 
 async function toggleCamera() {
-  deviceStore.toggleVideo()
-  await livekitManager.setCameraEnabled(deviceStore.isVideoEnabled)
+  if (!deviceStore.isVideoEnabled) {
+    // Enabling camera
+    try {
+      await livekitManager.setCameraEnabled(true, deviceStore.selectedVideoInputId)
+      deviceStore.isVideoEnabled = true
+      deviceStore.camPermissionState = 'granted'
+      deviceStore.camError = null
+      addToast('📷 Camera is on')
+      await deviceStore.enumerateDevices()
+    } catch (err: any) {
+      console.warn('Failed to enable camera:', err)
+      deviceStore.isVideoEnabled = false
+      const parsed = parseMediaError('camera', err)
+      deviceStore.camError = parsed
+      if (parsed.isBlockedByBrowser) {
+        deviceStore.camPermissionState = 'denied'
+        deviceStore.openPermissionGuide('camera')
+      } else {
+        addToast(`⚠️ ${parsed.title}: ${parsed.message}`)
+      }
+    }
+  } else {
+    // Disabling camera
+    try {
+      await livekitManager.setCameraEnabled(false)
+      deviceStore.isVideoEnabled = false
+      addToast('📷 Camera is off')
+    } catch (err) {
+      console.warn('Error turning off camera:', err)
+      deviceStore.isVideoEnabled = false
+    }
+  }
 }
 
 async function toggleScreenShare() {
-  try {
-    const nextState = !deviceStore.isScreenSharing
-    await livekitManager.setScreenShareEnabled(nextState)
-    deviceStore.isScreenSharing = nextState
-  } catch (err) {
-    console.warn('Screen share error:', err)
-    deviceStore.isScreenSharing = false
+  if (!deviceStore.isScreenSharing) {
+    try {
+      await livekitManager.setScreenShareEnabled(true)
+      deviceStore.isScreenSharing = true
+      addToast('🖥️ Screen sharing started')
+    } catch (err: any) {
+      console.warn('Screen share error:', err)
+      deviceStore.isScreenSharing = false
+      const parsed = parseMediaError('screenshare', err)
+      if (parsed.code !== 'SCREENSHARE_CANCELLED') {
+        addToast(`⚠️ ${parsed.title}: ${parsed.message}`)
+      }
+    }
+  } else {
+    try {
+      await livekitManager.setScreenShareEnabled(false)
+      deviceStore.isScreenSharing = false
+      addToast('🖥️ Screen sharing stopped')
+    } catch (err) {
+      console.warn('Error stopping screen share:', err)
+      deviceStore.isScreenSharing = false
+    }
   }
 }
 
@@ -320,12 +456,23 @@ async function toggleHandRaise() {
 }
 
 async function applyDeviceChanges() {
-  // Re-enable tracks with new devices
-  if (deviceStore.isVideoEnabled) {
-    await livekitManager.setCameraEnabled(true)
+  if (deviceStore.selectedVideoInputId) {
+    await livekitManager.switchVideoInput(deviceStore.selectedVideoInputId)
   }
-  if (deviceStore.isAudioEnabled) {
-    await livekitManager.setMicrophoneEnabled(true)
+  if (deviceStore.selectedAudioInputId) {
+    await livekitManager.switchAudioInput(deviceStore.selectedAudioInputId)
+  }
+  if (deviceStore.selectedAudioOutputId) {
+    await livekitManager.switchAudioOutput(deviceStore.selectedAudioOutputId)
+  }
+}
+
+async function handlePermissionRetrySuccess() {
+  if (deviceStore.activePermissionGuideKind === 'microphone' || deviceStore.activePermissionGuideKind === 'both') {
+    await toggleMic()
+  }
+  if (deviceStore.activePermissionGuideKind === 'camera' || deviceStore.activePermissionGuideKind === 'both') {
+    await toggleCamera()
   }
 }
 

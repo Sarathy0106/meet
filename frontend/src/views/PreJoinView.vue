@@ -26,7 +26,7 @@
       <div class="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
         <!-- Left: Camera Preview Tile -->
         <div class="lg:col-span-7 flex flex-col items-center">
-          <div class="relative w-full aspect-video bg-[#3c4043] rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center border border-meet-border">
+          <div class="relative w-full aspect-video bg-[#3c4043] rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center border border-meet-border group">
             <!-- Video Track -->
             <video
               ref="previewVideoRef"
@@ -45,11 +45,51 @@
               <AvatarInitials :name="guestDisplayName || authStore.displayName" size="2xl" />
             </div>
 
+            <!-- Permission Warning Banner on Preview -->
+            <div
+              v-if="deviceStore.micPermissionState === 'denied' || deviceStore.camPermissionState === 'denied'"
+              class="absolute top-4 inset-x-4 z-30 p-2.5 bg-gray-900/90 backdrop-blur-md rounded-xl border border-yellow-500/40 text-xs text-yellow-200 flex items-center justify-between shadow-xl"
+            >
+              <div class="flex items-center gap-2">
+                <AlertTriangle :size="16" class="text-yellow-400 shrink-0" />
+                <span>
+                  {{
+                    deviceStore.micPermissionState === 'denied' && deviceStore.camPermissionState === 'denied'
+                      ? 'Microphone and Camera are blocked'
+                      : deviceStore.micPermissionState === 'denied'
+                      ? 'Microphone is blocked'
+                      : 'Camera is blocked'
+                  }}
+                </span>
+              </div>
+              <button
+                @click="openPermissionGuide"
+                class="px-2.5 py-1 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-300 rounded-lg font-medium text-[11px] transition-colors"
+              >
+                Unblock
+              </button>
+            </div>
+
+            <!-- Audio Level Indicator (Visual sound wave meter) -->
+            <div
+              v-if="deviceStore.isAudioEnabled"
+              class="absolute bottom-4 left-4 z-20 flex items-center gap-1.5 px-3 py-1.5 bg-black/60 backdrop-blur-md rounded-full border border-white/10"
+              title="Microphone input level"
+            >
+              <Mic :size="14" class="text-meet-green" />
+              <div class="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-meet-green transition-all duration-75"
+                  :style="{ width: `${deviceStore.audioLevel}%` }"
+                ></div>
+              </div>
+            </div>
+
             <!-- Bottom Video Overlay Controls (Mic & Cam toggle) -->
             <div class="absolute bottom-4 inset-x-0 flex items-center justify-center gap-3 z-20">
               <button
-                @click="toggleMic"
-                class="p-3.5 rounded-full transition-all duration-150 shadow-lg"
+                @click="handleToggleMic"
+                class="p-3.5 rounded-full transition-all duration-150 shadow-lg relative"
                 :class="
                   deviceStore.isAudioEnabled
                     ? 'bg-meet-surface hover:bg-meet-surfaceLight text-white'
@@ -62,7 +102,7 @@
               </button>
 
               <button
-                @click="toggleCamera"
+                @click="handleToggleCamera"
                 class="p-3.5 rounded-full transition-all duration-150 shadow-lg"
                 :class="
                   deviceStore.isVideoEnabled
@@ -93,6 +133,27 @@
             <p class="text-sm text-meet-textMuted">
               {{ participantStatusText }}
             </p>
+          </div>
+
+          <!-- Permission Status Hint if blocked -->
+          <div
+            v-if="deviceStore.micPermissionState === 'denied' || deviceStore.camPermissionState === 'denied'"
+            class="p-3.5 bg-[#303134] border border-meet-border rounded-xl space-y-2"
+          >
+            <div class="flex items-center gap-2 text-xs font-semibold text-white">
+              <ShieldAlert :size="16" class="text-yellow-400" />
+              <span>Permission Notice</span>
+            </div>
+            <p class="text-xs text-meet-textMuted">
+              You can still join the call without permissions and unmute or turn on video anytime later.
+            </p>
+            <button
+              @click="openPermissionGuide"
+              class="text-xs text-meet-blue hover:underline font-medium inline-flex items-center gap-1"
+            >
+              <span>How to allow microphone & camera</span>
+              <ExternalLink :size="12" />
+            </button>
           </div>
 
           <!-- Guest Name Input (if not logged in) -->
@@ -142,19 +203,28 @@
       @close="isDeviceModalOpen = false"
       @device-changed="deviceStore.startPreviewStream()"
     />
+
+    <!-- Permission Guide Modal -->
+    <PermissionGuideModal
+      :is-open="deviceStore.isPermissionGuideOpen"
+      :kind="deviceStore.activePermissionGuideKind"
+      @close="deviceStore.closePermissionGuide()"
+      @retry-success="setupPreview"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Video, VideoOff, Mic, MicOff, Settings } from 'lucide-vue-next'
+import { Video, VideoOff, Mic, MicOff, Settings, AlertTriangle, ShieldAlert, ExternalLink } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useDeviceStore } from '@/stores/devices'
 import { useMeetingStore } from '@/stores/meeting'
 import { api } from '@/lib/api'
 import AvatarInitials from '@/components/common/AvatarInitials.vue'
 import DevicePickerModal from '@/components/call/DevicePickerModal.vue'
+import PermissionGuideModal from '@/components/common/PermissionGuideModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -208,15 +278,37 @@ async function setupPreview() {
   }
 }
 
-function toggleMic() {
-  deviceStore.toggleAudio()
+async function handleToggleMic() {
+  try {
+    await deviceStore.toggleAudio()
+  } catch {
+    if (deviceStore.micPermissionState === 'denied') {
+      deviceStore.openPermissionGuide('microphone')
+    }
+  }
 }
 
-function toggleCamera() {
-  deviceStore.toggleVideo()
-  if (previewVideoRef.value && deviceStore.localPreviewStream) {
-    previewVideoRef.value.srcObject = deviceStore.localPreviewStream
+async function handleToggleCamera() {
+  try {
+    await deviceStore.toggleVideo()
+    if (previewVideoRef.value && deviceStore.localPreviewStream) {
+      previewVideoRef.value.srcObject = deviceStore.localPreviewStream
+    }
+  } catch {
+    if (deviceStore.camPermissionState === 'denied') {
+      deviceStore.openPermissionGuide('camera')
+    }
   }
+}
+
+function openPermissionGuide() {
+  const kind =
+    deviceStore.micPermissionState === 'denied' && deviceStore.camPermissionState === 'denied'
+      ? 'both'
+      : deviceStore.micPermissionState === 'denied'
+      ? 'microphone'
+      : 'camera'
+  deviceStore.openPermissionGuide(kind)
 }
 
 async function handleJoin() {
@@ -240,10 +332,8 @@ async function handleJoin() {
     )
 
     if (res.data.status === 'waiting') {
-      // Route to waiting lobby
       router.push(`/meet/${meetingCode.value}/waiting`)
     } else {
-      // Route directly into the room
       router.push({
         name: 'room',
         params: { code: meetingCode.value },

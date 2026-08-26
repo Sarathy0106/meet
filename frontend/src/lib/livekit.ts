@@ -5,6 +5,7 @@ import {
   RemoteParticipant,
   LocalParticipant,
   Participant as LKParticipant,
+  Track,
 } from 'livekit-client'
 import type { DataPacket } from '@/types'
 
@@ -14,6 +15,7 @@ export class LiveKitManager {
   private onParticipantUpdateCallbacks: (() => void)[] = []
   private onActiveSpeakerChangeCallbacks: ((speakers: LKParticipant[]) => void)[] = []
   private onConnectionStatusChangeCallbacks: ((status: 'connecting' | 'connected' | 'reconnecting' | 'disconnected') => void)[] = []
+  private onScreenShareStoppedCallbacks: (() => void)[] = []
 
   public get currentRoom(): Room | null {
     return this.room
@@ -46,6 +48,19 @@ export class LiveKitManager {
     room.on(RoomEvent.Connected, () => {
       this.onConnectionStatusChangeCallbacks.forEach((cb) => cb('connected'))
       this.notifyParticipantUpdate()
+
+      // Handle browser autoplay policy
+      if (!room.canPlaybackAudio) {
+        room.startAudio().catch((e) => {
+          console.warn('LiveKit startAudio auto-unlock deferred until user gesture:', e)
+        })
+      }
+    })
+
+    room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+      if (!room.canPlaybackAudio) {
+        console.warn('Audio playback status: playback blocked by browser')
+      }
     })
 
     room.on(RoomEvent.Reconnecting, () => {
@@ -86,6 +101,13 @@ export class LiveKitManager {
       this.notifyParticipantUpdate()
     })
 
+    room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+      if (publication.source === Track.Source.ScreenShare) {
+        this.onScreenShareStoppedCallbacks.forEach((cb) => cb())
+      }
+      this.notifyParticipantUpdate()
+    })
+
     room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
       this.onActiveSpeakerChangeCallbacks.forEach((cb) => cb(speakers))
     })
@@ -104,19 +126,39 @@ export class LiveKitManager {
     return room
   }
 
-  public async setCameraEnabled(enabled: boolean): Promise<void> {
-    if (!this.room) return
-    await this.room.localParticipant.setCameraEnabled(enabled)
+  public async setCameraEnabled(enabled: boolean, deviceId?: string): Promise<void> {
+    if (!this.room || !this.room.localParticipant) return
+    const options = deviceId ? { deviceId: { exact: deviceId } } : undefined
+    await this.room.localParticipant.setCameraEnabled(enabled, options)
+    this.notifyParticipantUpdate()
   }
 
-  public async setMicrophoneEnabled(enabled: boolean): Promise<void> {
-    if (!this.room) return
-    await this.room.localParticipant.setMicrophoneEnabled(enabled)
+  public async setMicrophoneEnabled(enabled: boolean, deviceId?: string): Promise<void> {
+    if (!this.room || !this.room.localParticipant) return
+    const options = deviceId ? { deviceId: { exact: deviceId } } : undefined
+    await this.room.localParticipant.setMicrophoneEnabled(enabled, options)
+    this.notifyParticipantUpdate()
   }
 
   public async setScreenShareEnabled(enabled: boolean): Promise<void> {
-    if (!this.room) return
+    if (!this.room || !this.room.localParticipant) return
     await this.room.localParticipant.setScreenShareEnabled(enabled)
+    this.notifyParticipantUpdate()
+  }
+
+  public async switchAudioInput(deviceId: string): Promise<void> {
+    if (!this.room) return
+    await this.room.switchActiveDevice('audioinput', deviceId)
+  }
+
+  public async switchVideoInput(deviceId: string): Promise<void> {
+    if (!this.room) return
+    await this.room.switchActiveDevice('videoinput', deviceId)
+  }
+
+  public async switchAudioOutput(deviceId: string): Promise<void> {
+    if (!this.room) return
+    await this.room.switchActiveDevice('audiooutput', deviceId)
   }
 
   public async sendData(packet: DataPacket): Promise<void> {
@@ -151,6 +193,13 @@ export class LiveKitManager {
     this.onConnectionStatusChangeCallbacks.push(cb)
     return () => {
       this.onConnectionStatusChangeCallbacks = this.onConnectionStatusChangeCallbacks.filter((c) => c !== cb)
+    }
+  }
+
+  public onScreenShareStopped(cb: () => void): () => void {
+    this.onScreenShareStoppedCallbacks.push(cb)
+    return () => {
+      this.onScreenShareStoppedCallbacks = this.onScreenShareStoppedCallbacks.filter((c) => c !== cb)
     }
   }
 
