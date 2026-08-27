@@ -69,18 +69,21 @@ const email = ref('')
 const displayName = ref('')
 const meetUrl = import.meta.env.VITE_MEET_APP_URL || 'https://frontend-seven-theta-86.vercel.app'
 
-function handleLogin() {
+const isLoading = ref(false)
+const errorMessage = ref('')
+
+async function handleLogin() {
   if (!email.value.trim()) return
 
-  // Demo token generator / session setup
-  const mockToken = `mock_token_${Date.now()}`
-  authStore.setToken(mockToken)
-  authStore.user = {
-    id: '00000000-0000-0000-0000-000000000001',
-    email: email.value.trim(),
-    display_name: displayName.value.trim() || email.value.split('@')[0],
+  isLoading.value = true
+  errorMessage.value = ''
+  try {
+    await authStore.login(email.value.trim())
+    router.push('/')
+  } catch (err: any) {
+    errorMessage.value = err.response?.data?.detail || 'Failed to sign in. Please try again.'
+  } finally {
+    isLoading.value = false
   }
-
-  router.push('/')
 }
 </script>

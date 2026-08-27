@@ -17,6 +17,28 @@ class UserResponse(OrmBase):
     avatar_url: Optional[str] = None
 
 
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserSignup(BaseModel):
+    email: EmailStr
+    password: str
+    display_name: str
+
+
+class GuestLogin(BaseModel):
+    email: Optional[EmailStr] = None
+    display_name: Optional[str] = None
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
 # Calendar Schemas
 class CalendarCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)

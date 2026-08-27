@@ -53,7 +53,7 @@ const isStandaloneView = computed(() => {
 })
 
 onMounted(async () => {
-  await authStore.fetchCurrentUser()
+  await authStore.initSession()
   await eventsStore.fetchCalendars()
   await eventsStore.fetchEvents()
   await notifStore.fetchNotifications()

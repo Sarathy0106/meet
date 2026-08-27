@@ -11,30 +11,57 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => !!token.value)
   const displayName = computed(() => user.value?.display_name || user.value?.email || 'User')
 
-  async function fetchCurrentUser() {
-    if (!token.value) {
-      isInitialized.value = true
-      return
-    }
-    try {
-      const res = await api.get('/auth/me')
-      user.value = res.data
-    } catch {
-      // Fallback guest / demo user if offline or local testing
-      user.value = {
-        id: '00000000-0000-0000-0000-000000000001',
-        email: 'user@sidanex.com',
-        display_name: 'Demo User',
+  async function initSession() {
+    if (token.value) {
+      try {
+        const res = await api.get('/auth/me')
+        user.value = res.data
+        isInitialized.value = true
+        return
+      } catch (err: any) {
+        if (err.response?.status === 401) {
+          token.value = ''
+          localStorage.removeItem('access_token')
+          localStorage.removeItem('token')
+        }
       }
+    }
+
+    // Auto-create / join guest session if unauthenticated
+    try {
+      const res = await api.post('/auth/guest')
+      token.value = res.data.access_token
+      user.value = res.data.user
+      localStorage.setItem('access_token', res.data.access_token)
+    } catch (e) {
+      console.warn('Could not auto-provision session:', e)
     } finally {
       isInitialized.value = true
     }
   }
 
-  function setToken(newToken: string) {
-    token.value = newToken
-    localStorage.setItem('access_token', newToken)
-    fetchCurrentUser()
+  async function login(email: string, password?: string) {
+    if (password) {
+      const res = await api.post('/auth/login', { email, password })
+      token.value = res.data.access_token
+      user.value = res.data.user
+      localStorage.setItem('access_token', res.data.access_token)
+      return res.data
+    } else {
+      const res = await api.post('/auth/guest', { email })
+      token.value = res.data.access_token
+      user.value = res.data.user
+      localStorage.setItem('access_token', res.data.access_token)
+      return res.data
+    }
+  }
+
+  async function signup(email: string, password: string, displayName: string) {
+    const res = await api.post('/auth/signup', { email, password, display_name: displayName })
+    token.value = res.data.access_token
+    user.value = res.data.user
+    localStorage.setItem('access_token', res.data.access_token)
+    return res.data
   }
 
   function logout() {
@@ -50,8 +77,9 @@ export const useAuthStore = defineStore('auth', () => {
     isInitialized,
     isAuthenticated,
     displayName,
-    fetchCurrentUser,
-    setToken,
+    initSession,
+    login,
+    signup,
     logout,
   }
 })
