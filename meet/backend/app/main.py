@@ -28,20 +28,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware configuration
-origins = settings.cors_origins_list
-# If origins is wildcard or list
-if "*" in origins:
-    allow_origins = ["*"]
-else:
-    allow_origins = origins + ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
+    allow_origins=[
+        "https://frontend-seven-theta-86.vercel.app",
+        "https://meridian-calendar-frontend.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ],
+    allow_origin_regex=r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Include routers
