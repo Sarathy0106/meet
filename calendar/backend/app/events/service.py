@@ -99,13 +99,20 @@ async def create_event_service(
                 rsvp_token=token,
             )
             db.add(new_att)
-            await db.flush()
             if background_tasks:
                 background_tasks.add_task(send_event_invitation, event, new_att, user.email)
                 new_att.invitation_sent_at = datetime.now(timezone.utc)
 
     await db.flush()
-    return event
+
+    # Eagerly load event with attendees so Pydantic serialization doesn't trigger async greenlet error
+    stmt = (
+        select(Event)
+        .options(selectinload(Event.attendees))
+        .where(Event.id == event.id)
+    )
+    res = await db.execute(stmt)
+    return res.scalar_one()
 
 
 async def get_events_range_service(

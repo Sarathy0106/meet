@@ -178,7 +178,13 @@ async def update_event(
                 new_att.invitation_sent_at = datetime.now(timezone.utc)
 
     await db.flush()
-    return event
+    stmt = (
+        select(Event)
+        .options(selectinload(Event.attendees))
+        .where(Event.id == event.id)
+    )
+    res = await db.execute(stmt)
+    return res.scalar_one()
 
 
 @router.delete("/events/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
