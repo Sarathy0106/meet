@@ -4,7 +4,7 @@ Sidanex is an AI Innovation Intelligence Platform designed to help organizations
 
 ## Website
 
-[Visit Sidanex](https:/sidanex.com)
+[Visit Sidanex](https://sidanex.com)
 
 ## About
 
